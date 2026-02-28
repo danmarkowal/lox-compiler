@@ -76,3 +76,12 @@ void print_value(Value value) {
 #endif
 }
 
+void print_value_array(ValueArray* array) {
+  printf("[");
+  for (int i = 0; i < array->count; i++) {
+    if (i > 0) printf(", ");
+    print_value(array->values[i]);
+  }
+  printf("]");
+}
+

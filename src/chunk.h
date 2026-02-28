@@ -54,17 +54,24 @@ typedef enum {
   OP_METHOD
 } OpCode;
 
+// run length encoding of line numbers
 typedef struct {
+  int line;
+  int count;
+} LineEncoding;
+
+typedef struct {
+  // the current number of bytecode instructions in this chunk
   int count;
   int capacity;
   // contains the bytecode instruction for the program
   uint8_t* code;
-  // stores the line number of the previous instruction
-  // int prev_line;
-  // stores the number of instructions on the current line
-  // int line_count;
-  // contains the lines number corresponding to each instruction 
-  int* lines;
+  // the current line encoding
+  int line_count;
+  int line_capacity;
+  // contains the line number corresponding to each instruction 
+  // uses run-length encoding
+  LineEncoding* lines;
   // contains immediate values referenced in the code
   ValueArray constants;
 } Chunk;
@@ -75,5 +82,8 @@ void write_chunk(Chunk* chunk, uint8_t byte, int line);
 // returns the index in the value array where the constant was defined
 int add_constant(Chunk* chunk, Value value);
 int write_constant(Chunk* chunk, Value value, int line);
+// returns the line an instruction is on given an offset
+// updates the offset pointer so that you can determine whether the instruction is the first one on that line
+int get_line(Chunk* chunk, int offset);
 
 #endif
