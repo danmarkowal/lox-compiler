@@ -180,6 +180,26 @@ static void emit_bytes(uint8_t byte_1, uint8_t byte_2) {
   emit_byte(byte_2);
 }
 
+// emits 1 opcode byte and 3 value bytes
+// lets one identify long constant and global values in the globals array
+static void emit_long(uint8_t opcode, uint32_t value) {
+  emit_byte(opcode);
+  // 1st byte
+  emit_byte((uint8_t) ((value >> 0) & 0xFF));
+  // 2nd byte
+  emit_byte((uint8_t) ((value >> 8) & 0xFF));
+  // 3rd byte
+  emit_byte((uint8_t) ((value >> 16) & 0xFF));
+}
+
+static void emit_op_constant(uint8_t opcode, uint8_t long_opcode, uint32_t constant) {
+  if (constant > UINT8_MAX) {
+    emit_long(long_opcode, constant);
+  } else {
+    emit_bytes(opcode, (uint8_t) constant);
+  }
+}
+
 static int emit_jump(uint8_t instruction) {
   emit_byte(instruction);
   // placeholder address
@@ -211,16 +231,17 @@ static void emit_return() {
   emit_byte(OP_RETURN);
 }
 
-static uint8_t make_constant(Value value) {
+static uint32_t make_constant(Value value) {
   int constant = add_constant(current_chunk(), value);
   // this has to be changed as the maximum number of constants
   // is actually 2^24 due to OP_CONSTANT_LONG which I implemented
-  // if (constant > UINT8_MAX) {
-  //   error("Too many constants in one chunk");
-  //   return 0;
-  // }
+  if (constant > MAX_CONSTANTS) {
+    error("Too many constants in one chunk");
+    return 0;
+  }
 
-  return (uint8_t)constant;
+  // the next size up from a 24-bit integer
+  return (uint32_t) constant;
 }
 
 static void patch_jump(int offset) {
@@ -279,7 +300,7 @@ static ParseRule* get_rule(TokenType type);
 static void parse_precedence(Precedence precedence);
 
 // creates a chunk constant for the variable name
-static uint8_t identifier_constant(Token* name) {
+static uint32_t identifier_constant(Token* name) {
   return make_constant(OBJ_VAL(copy_string(name->start, name->length)));
 }
 
@@ -387,7 +408,7 @@ static void declare_variable() {
   add_local(*name);
 }
 
-static uint8_t parse_variable(const char* error_message) {
+static uint32_t parse_variable(const char* error_message) {
   consume(TOKEN_IDENTIFIER, error_message);
 
   declare_variable();
@@ -398,7 +419,7 @@ static uint8_t parse_variable(const char* error_message) {
 
 static void named_variable(Token name, bool can_assign) {
   uint8_t get_op, set_op;
-  // prioritie local variables over global variables
+  // prioritize local variables over global variables
   int arg = resolve_local(current, &name);
   if (arg != -1) {
     get_op = OP_GET_LOCAL;
@@ -408,17 +429,22 @@ static void named_variable(Token name, bool can_assign) {
     set_op = OP_SET_UPVALUE;
   } else {
     arg = identifier_constant(&name);
-    get_op = OP_GET_GLOBAL;
-    set_op = OP_SET_GLOBAL;
+    if (arg > UINT8_MAX) {
+      get_op = OP_GET_GLOBAL_LONG;
+      set_op = OP_SET_GLOBAL_LONG;
+    } else {
+      get_op = OP_GET_GLOBAL;
+      set_op = OP_SET_GLOBAL;
+    }
   }
 
   // if the next token is an equals sign, set the variable instead
   // this makes expresssions like abc.efg(hij).variable = "..."; work
   if (can_assign && match(TOKEN_EQUAL)) {
     expression();
-    emit_bytes(set_op, (uint8_t) arg);
+    emit_op_constant(set_op, set_op, arg);
   } else {
-    emit_bytes(get_op, (uint8_t) arg);
+    emit_op_constant(get_op, get_op, arg);
   }
 }
 
@@ -460,14 +486,15 @@ static void super_(bool canAssign) {
   
   consume(TOKEN_DOT, "Expect '.' after 'super'");
   consume(TOKEN_IDENTIFIER, "Expect superclass method name");
-  uint8_t name = identifier_constant(&parser.previous);
+  // TODO: Fix this
+  uint32_t name = identifier_constant(&parser.previous);
 
   named_variable(synthetic_token("this"), false);
   if (match(TOKEN_LEFT_PAREN)) {
-    uint8_t argCount = argument_list();
+    uint8_t arg_count = argument_list();
     named_variable(synthetic_token("super"), false);
     emit_bytes(OP_SUPER_INVOKE, name);
-    emit_byte(argCount);
+    emit_byte(arg_count);
   } else {
     named_variable(synthetic_token("super"), false);
     emit_bytes(OP_GET_SUPER, name);
@@ -481,13 +508,13 @@ static void mark_initialized() {
 }
 
 // "defining" is when a variable becomes available for use
-static void define_variable(uint8_t global) {
+static void define_variable(uint32_t global) {
   if (current->scope_depth > 0) {
     mark_initialized();
     return;
   }
 
-  emit_bytes(OP_DEFINE_GLOBAL, global);
+  emit_op_constant(OP_DEFINE_GLOBAL, OP_DEFINE_GLOBAL_LONG, global);
 }
 
 // left hand side already compiled
@@ -563,17 +590,17 @@ static void literal(bool can_assign) {
 
 static void dot(bool can_assign) {
   consume(TOKEN_IDENTIFIER, "Expect property name after '.'");
-  uint8_t name = identifier_constant(&parser.previous);
+  uint32_t name_constant = identifier_constant(&parser.previous);
 
   if (can_assign && match(TOKEN_EQUAL)) {
     expression();
-    emit_bytes(OP_SET_PROPERTY, name);
+    emit_bytes(OP_SET_PROPERTY, name_constant);
   } else if (match(TOKEN_LEFT_PAREN)) {
     uint8_t arg_count = argument_list();
-    emit_bytes(OP_INVOKE, name);
+    emit_op_constant(OP_INVOKE, OP_INVOKE_LONG, name_constant);
     emit_byte(arg_count);
   } else {
-    emit_bytes(OP_GET_PROPERTY, name);
+    emit_bytes(OP_GET_PROPERTY, name_constant);
   }
 }
 
@@ -602,7 +629,7 @@ static void function(FunctionType type) {
       if (current->function->arity > 255) {
         error_at_current("Can't have more than 255 parameters (why even would you)");
       }
-      uint8_t constant = parse_variable("Expect parameter name");
+      uint32_t constant = parse_variable("Expect parameter name");
       define_variable(constant);
     } while (match(TOKEN_COMMA));
   }
@@ -613,7 +640,8 @@ static void function(FunctionType type) {
   block();
 
   ObjFunction* function = end_compiler();
-  emit_bytes(OP_CLOSURE, make_constant(OBJ_VAL(function)));
+  uint32_t constant = make_constant(OBJ_VAL(function));
+  emit_op_constant(OP_CLOSURE, OP_CLOSURE_LONG, constant);
 
   for (int i = 0; i < function->upvalue_count; i++) {
     emit_byte(compiler.upvalues[i].is_local ? 1 : 0);
@@ -623,7 +651,7 @@ static void function(FunctionType type) {
 
 static void method() {
   consume(TOKEN_IDENTIFIER, "Expect method name");
-  uint8_t constant = identifier_constant(&parser.previous);
+  uint32_t constant = identifier_constant(&parser.previous);
 
   FunctionType type = TYPE_METHOD;
   if (parser.previous.length == 4 && memcmp(parser.previous.start, "init", 4) == 0) {
@@ -632,16 +660,16 @@ static void method() {
 
   function(type);
 
-  emit_bytes(OP_METHOD, constant);
+  emit_op_constant(OP_METHOD, OP_METHOD_LONG, constant);
 }
 
 static void class_declaration() {
   consume(TOKEN_IDENTIFIER, "Expect class name");
   Token class_name = parser.previous;
-  uint8_t name_constant = identifier_constant(&parser.previous);
+  uint32_t name_constant = identifier_constant(&parser.previous);
   declare_variable();
 
-  emit_bytes(OP_CLASS, name_constant);
+  emit_op_constant(OP_CLASS, OP_CLASS_LONG, name_constant);
   define_variable(name_constant);
 
   ClassCompiler class_compiler;
@@ -685,7 +713,7 @@ static void class_declaration() {
 }
 
 static void fun_declaration() {
-  uint8_t global = parse_variable("Expect function name");
+  uint32_t global = parse_variable("Expect function name");
   mark_initialized();
   function(TYPE_FUNCTION);
   define_variable(global);
@@ -725,7 +753,7 @@ static void if_statement() {
 
 static void var_declaration() {
   // "var" followed by variable name
-  uint8_t global = parse_variable("Expect variable name");
+  uint32_t global = parse_variable("Expect variable name");
 
   if (match(TOKEN_EQUAL)) {
     expression();

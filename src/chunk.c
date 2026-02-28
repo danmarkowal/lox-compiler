@@ -63,7 +63,7 @@ int write_constant(Chunk* chunk, Value value, int line) {
   int constant = add_constant(chunk, value);
   // check if the value of contant is greater than 255 (cannot fit in one byte)
   // if so, use OP_CONSTANT_LONG to define the constant
-  if (constant > 255) {
+  if (constant > UINT8_MAX) {
     write_chunk(chunk, OP_CONSTANT_LONG, line);
     // store the value in little endian format
     // 1st byte

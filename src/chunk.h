@@ -4,6 +4,8 @@
 #include "common.h"
 #include "value.h"
 
+#define MAX_CONSTANTS ((2<<23)-1)
+
 // challenge: which instructions could you eliminate?
 // - remove OP_SUBTRACT, replace with OP_NEGATE, OP_ADD
 // - cannot remove OP_NEGATE with OP_CONSTANT <zero>, OP_ADD
@@ -15,6 +17,7 @@
 // going to have to add OP_GET_CONSTANT_LONG, OP_SET_CONSTANT_LONG etc.
 typedef enum {
   OP_CONSTANT,
+  OP_CONSTANT_LONG,
   OP_NIL,
   OP_TRUE,
   OP_FALSE,
@@ -22,17 +25,21 @@ typedef enum {
   OP_GET_LOCAL,
   OP_SET_LOCAL,
   OP_DEFINE_GLOBAL,
+  OP_DEFINE_GLOBAL_LONG,
   OP_GET_GLOBAL,
+  OP_GET_GLOBAL_LONG,
   OP_SET_GLOBAL,
+  OP_SET_GLOBAL_LONG,
   OP_GET_UPVALUE,
   OP_SET_UPVALUE,
   OP_GET_PROPERTY,
+  OP_GET_PROPERTY_LONG,
   OP_SET_PROPERTY,
+  OP_SET_PROPERTY_LONG,
   OP_GET_SUPER,
   OP_EQUAL,
   OP_GREATER,
   OP_LESS,
-  OP_CONSTANT_LONG,
   OP_ADD,
   OP_SUBTRACT,
   OP_MULTIPLY,
@@ -45,13 +52,17 @@ typedef enum {
   OP_LOOP,
   OP_CALL,
   OP_INVOKE,
+  OP_INVOKE_LONG,
   OP_SUPER_INVOKE,
   OP_CLOSURE,
+  OP_CLOSURE_LONG,
   OP_CLOSE_UPVALUE,
   OP_RETURN,
   OP_CLASS,
+  OP_CLASS_LONG,
   OP_INHERIT,
-  OP_METHOD
+  OP_METHOD,
+  OP_METHOD_LONG
 } OpCode;
 
 // run length encoding of line numbers

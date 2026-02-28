@@ -242,7 +242,10 @@ static InterpretResult run() {
     (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
 #define READ_CONSTANT() \
     (frame->closure->function->chunk.constants.values[READ_BYTE()])
+#define READ_CONSTANT_LONG() \
+    (frame->closure->function->chunk.constants.values[(READ_BYTE() << 0) | (READ_BYTE() << 8) | (READ_BYTE() << 16)])
 #define READ_STRING() AS_STRING(READ_CONSTANT())
+#define READ_STRING_LONG() AS_STRING(READ_CONSTANT_LONG())
 #define BINARY_OP(value_type, op) \
     do { \
       if (!IS_NUMBER(peek(0)) || !IS_NUMBER(peek(1))) { \
@@ -271,17 +274,9 @@ static InterpretResult run() {
 
     uint8_t instruction;
     switch (instruction = READ_BYTE()) {
-      case OP_CONSTANT: {
-        Value constant = READ_CONSTANT();
-        push(constant);
-        break;
-      }
+      case OP_CONSTANT:
       case OP_CONSTANT_LONG: {
-        uint8_t byte_1 = READ_BYTE();
-        uint8_t byte_2 = READ_BYTE();
-        uint8_t byte_3 = READ_BYTE();
-        uint32_t index = (byte_1 << 0) | (byte_2 << 8) | (byte_3 << 16);
-        Value constant = frame->closure->function->chunk.constants.values[index];
+        Value constant = instruction == OP_CONSTANT ? READ_CONSTANT() : READ_CONSTANT_LONG();
         push(constant);
         break;
       }
@@ -311,8 +306,9 @@ static InterpretResult run() {
         frame->slots[slot] = peek(0);
         break;
       }
-      case OP_GET_GLOBAL: {
-        ObjString* name = READ_STRING();
+      case OP_GET_GLOBAL:
+      case OP_GET_GLOBAL_LONG: {
+        ObjString* name = instruction == OP_GET_GLOBAL ? READ_STRING() : READ_STRING_LONG();
         Value value;
         if (!table_get(&vm.globals, name, &value)) {
           runtime_error("Undefined variable '%s'", name->chars);
@@ -322,14 +318,16 @@ static InterpretResult run() {
         push(value);
         break;
       }
-      case OP_DEFINE_GLOBAL: {
-        ObjString* name = READ_STRING();
+      case OP_DEFINE_GLOBAL:
+      case OP_DEFINE_GLOBAL_LONG: {
+        ObjString* name = instruction == OP_DEFINE_GLOBAL ? READ_STRING() : READ_STRING_LONG();
         table_set(&vm.globals, name, peek(0));
         pop();
         break;
       }
-      case OP_SET_GLOBAL: {
-        ObjString* name = READ_STRING();
+      case OP_SET_GLOBAL:
+      case OP_SET_GLOBAL_LONG: {
+        ObjString* name = instruction == OP_SET_GLOBAL ? READ_STRING() : READ_STRING_LONG();
         // not !table_set(...) as if table_set returns true, that means a new entry was added
         // that means that the variable was previously undefined
         if (table_set(&vm.globals, name, peek(0))) {
@@ -350,14 +348,15 @@ static InterpretResult run() {
         *frame->closure->upvalues[slot]->location = peek(0);
         break;
       }
-      case OP_GET_PROPERTY: {
+      case OP_GET_PROPERTY:
+      case OP_GET_PROPERTY_LONG: {
         if (!IS_INSTANCE(peek(0))) {
           runtime_error("Only instances have properties");
           return INTERPRET_RUNTIME_ERROR;
         }
 
         ObjInstance* instance = AS_INSTANCE(peek(0));
-        ObjString* name = READ_STRING();
+        ObjString* name = instruction == OP_GET_PROPERTY ? READ_STRING() : READ_STRING_LONG();
 
         Value value;
         if (table_get(&instance->fields, name, &value)) {
@@ -372,14 +371,16 @@ static InterpretResult run() {
 
         break;
       }
-      case OP_SET_PROPERTY: {
+      case OP_SET_PROPERTY:
+      case OP_SET_PROPERTY_LONG: {
         if (!IS_INSTANCE(peek(1))) {
           runtime_error("Only instances have fields");
           return INTERPRET_RUNTIME_ERROR;
         }
         
         ObjInstance* instance = AS_INSTANCE(peek(1));
-        table_set(&instance->fields, READ_STRING(), peek(0));
+        ObjString* name = instruction == OP_SET_PROPERTY ? READ_STRING() : READ_STRING_LONG();
+        table_set(&instance->fields, name, peek(0));
         Value value = pop();
         pop();
         push(value);
@@ -485,8 +486,9 @@ static InterpretResult run() {
         frame = &vm.frames[vm.frame_count - 1];
         break;
       }
-      case OP_INVOKE: {
-        ObjString* method = READ_STRING();
+      case OP_INVOKE:
+      case OP_INVOKE_LONG: {
+        ObjString* method = instruction == OP_INVOKE ? READ_STRING() : READ_STRING_LONG();
         int arg_count = READ_BYTE();
         if (!invoke(method, arg_count)) {
           return INTERPRET_RUNTIME_ERROR;
@@ -506,8 +508,9 @@ static InterpretResult run() {
         frame = &vm.frames[vm.frame_count - 1];
         break;
       }
-      case OP_CLOSURE: {
-        ObjFunction* function = AS_FUNCTION(READ_CONSTANT());
+      case OP_CLOSURE:
+      case OP_CLOSURE_LONG: {
+        ObjFunction* function = AS_FUNCTION(instruction == OP_CLOSURE ? READ_CONSTANT() : READ_CONSTANT_LONG());
         ObjClosure* closure = new_closure(function);
         push(OBJ_VAL(closure));
 
@@ -550,7 +553,8 @@ static InterpretResult run() {
         break;
       }    
       case OP_CLASS:
-        push(OBJ_VAL(new_class(READ_STRING())));
+      case OP_CLASS_LONG:
+        push(OBJ_VAL(new_class(instruction == OP_CLASS ? READ_STRING() : READ_STRING_LONG())));
         break;
       case OP_INHERIT: {
         Value superclass = peek(1);
@@ -566,15 +570,18 @@ static InterpretResult run() {
         break;
       }
       case OP_METHOD:
-        define_method(READ_STRING());
+      case OP_METHOD_LONG:
+        define_method(instruction == OP_METHOD ? READ_STRING() : READ_STRING_LONG());
         break;
     }
   }
 
 #undef READ_BYTE
 #undef READ_CONSTANT
+#undef READ_CONSTANT_LONG
 #undef READ_SHORT
 #undef READ_STRING
+#undef READ_STRING_LONG
 #undef BINARY_OP
 }
 

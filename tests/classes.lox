@@ -1,0 +1,16 @@
+class A {
+  method1() {
+    print("This is class A");
+  }
+}
+
+class B < A {
+  method1() {
+    super.method1();
+    print("But I just called this from class B");
+  }
+}
+
+var b = B();
+b.method1();
+
