@@ -81,7 +81,8 @@ ObjNative* new_native(NativeFn function) {
 
 // dynamically allocate a string object
 static ObjString* allocate_string(const char* chars, int length, uint32_t hash) {
-  ObjString* string = (ObjString*) allocate_object(sizeof(ObjString) + length * sizeof(char), OBJ_STRING);
+  // length + 1 because of the null character
+  ObjString* string = (ObjString*) allocate_object(sizeof(ObjString) + (length + 1) * sizeof(char), OBJ_STRING);
   string->length = length;
   string->hash = hash; 
 
@@ -89,6 +90,8 @@ static ObjString* allocate_string(const char* chars, int length, uint32_t hash) 
   for (int i = 0; i < length; i++) {
     string->chars[i] = chars[i];
   }
+
+  string->chars[length] = '\0';
 
   // use the table like a hash set
   push(OBJ_VAL(string));
