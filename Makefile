@@ -25,7 +25,7 @@ $(TARGET): $(OBJ_FILES)
 # Rule to compile each .c file into a .o object file
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(OBJ_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DEFINES) -c $< -o $@
 
 # Clean up build files
 clean:
@@ -35,6 +35,10 @@ clean:
 test: $(TARGET)
 	$(TARGET)
 
+# Debug target to define macros
+debug: CFLAGS += -DDEBUG_PRINT_CODE -DDEBUG_TRACE_EXECUTION
+debug: all
+
 # Phony targets
-.PHONY: all clean test
+.PHONY: all clean test debug
 

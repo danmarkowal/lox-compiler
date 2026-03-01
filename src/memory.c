@@ -192,8 +192,10 @@ static void free_object(Obj* object) {
       break;
     case OBJ_STRING: {
       ObjString* string = (ObjString*)object;
-      FREE_ARRAY(char, string->chars, string->length + 1);
-      FREE(ObjString, object);
+      // not needed for flexible array member
+      // FREE_ARRAY(char, string->chars, string->length + 1);
+      // FREE(ObjString, object);
+      reallocate(object, sizeof(ObjString) + string->length * sizeof(char), 0);
       break;
     case OBJ_UPVALUE:
       FREE(ObjUpvalue, object);
