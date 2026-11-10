@@ -1,0 +1,23 @@
+class Person {
+  init(name, surname) {
+    this.name = name;
+    this.surname = surname;
+  }
+
+  greet() {
+    print "Nice to meet you, my name is " + this.name;
+  }
+}
+
+class Worker < Person {
+  greet() {
+    super.greet();
+    print "Sorry but I'm busy at the moment";
+  }
+}
+
+const p = Person("Daniel", "L");
+const w = Worker("Greg", "P");
+p.greet();
+w.greet();
+

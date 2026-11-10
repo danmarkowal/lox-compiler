@@ -9,6 +9,7 @@
 #include "object.h"
 #include "memory.h"
 #include "scanner.h"
+#include "table.h"
 #include "value.h"
 
 #ifdef DEBUG_PRINT_CODE
@@ -48,12 +49,13 @@ typedef struct {
   Token name;
   int depth;
   bool is_captured;
-  // bool constant; ?
+  bool is_const;
 } Local;
 
 typedef struct {
   uint8_t index;
   bool is_local;
+  bool is_const;
 } Upvalue;
 
 typedef enum {
@@ -83,6 +85,8 @@ Parser parser;
 Compiler* current = NULL;
 ClassCompiler* current_class = NULL;
 Chunk* compiling_chunk;
+// stores a map of global names to 
+Table globals;
 
 static void init_compiler(Compiler* compiler, FunctionType type) {
   compiler->enclosing = current;
@@ -101,6 +105,7 @@ static void init_compiler(Compiler* compiler, FunctionType type) {
   Local* local = &current->locals[current->local_count++];
   local->depth = 0;
   local->is_captured = false;
+  local->is_const = false;
   if (type != TYPE_FUNCTION) {
     local->name.start = "this";
     local->name.length = 4;
@@ -327,7 +332,7 @@ static int resolve_local(Compiler* compiler, Token* name) {
 }
 
 static int add_upvalue(Compiler* compiler, uint8_t index,
-                      bool is_local) {
+                      bool is_local, bool is_const) {
   int upvalue_count = compiler->function->upvalue_count;
 
   // check if function already has upvalue that closes over this variable
@@ -345,6 +350,7 @@ static int add_upvalue(Compiler* compiler, uint8_t index,
   }
 
   compiler->upvalues[upvalue_count].is_local = is_local;
+  compiler->upvalues[upvalue_count].is_const = is_const;
   compiler->upvalues[upvalue_count].index = index;
   return compiler->function->upvalue_count++;
 }
@@ -354,23 +360,26 @@ static int resolve_upvalue(Compiler* compiler, Token* name) {
   if (compiler->enclosing == NULL) return -1;
 
   // try to resolve the local inside the parent scope
+  // if resolved, capture as upvalue
   int local = resolve_local(compiler->enclosing, name);
   if (local != -1) {
     // mark variable in enclosing scope as captured
     compiler->enclosing->locals[local].is_captured = true;
-    return add_upvalue(compiler, (uint8_t)local, true);
+    bool is_const = compiler->enclosing->locals[local].is_const;
+    return add_upvalue(compiler, (uint8_t)local, true, is_const);
   }
 
   // dynamic programming?
   int upvalue = resolve_upvalue(compiler->enclosing, name);
   if (upvalue != -1) {
-    return add_upvalue(compiler, (uint8_t)upvalue, false);
+    bool is_const = compiler->enclosing->upvalues[upvalue].is_const;
+    return add_upvalue(compiler, (uint8_t)upvalue, false, is_const);
   }
 
   return -1;
 }
 
-static void add_local(Token name) {
+static void add_local(Token name, bool is_const) {
   if (current->local_count == UINT8_COUNT) {
     error("Too many local variables in function");
     return;
@@ -381,11 +390,12 @@ static void add_local(Token name) {
   // -1 => uninitialied
   local->depth = -1;
   local->is_captured = false;
+  local->is_const = is_const;
 }
 
 // compiler needs to remember that local variables exist
 // "declaring" is adding a variable to the scope
-static void declare_variable() {
+static void declare_variable(bool is_const) {
   // global variable
   if (current->scope_depth == 0) return;
 
@@ -405,13 +415,13 @@ static void declare_variable() {
     }
   }
 
-  add_local(*name);
+  add_local(*name, is_const);
 }
 
 static uint32_t parse_variable(const char* error_message) {
   consume(TOKEN_IDENTIFIER, error_message);
 
-  declare_variable();
+  declare_variable(false);
   if (current->scope_depth > 0) return 0;
 
   return identifier_constant(&parser.previous);
@@ -421,12 +431,15 @@ static void named_variable(Token name, bool can_assign) {
   uint8_t get_op, set_op;
   // prioritize local variables over global variables
   int arg = resolve_local(current, &name);
+  bool is_const = false;
   if (arg != -1) {
     get_op = OP_GET_LOCAL;
     set_op = OP_SET_LOCAL;
+    is_const = current->locals[arg].is_const;
   } else if ((arg = resolve_upvalue(current, &name)) != -1) {
     get_op = OP_GET_UPVALUE;
     set_op = OP_SET_UPVALUE;
+    is_const = current->upvalues[arg].is_const;
   } else {
     arg = identifier_constant(&name);
     if (arg > UINT8_MAX) {
@@ -436,11 +449,23 @@ static void named_variable(Token name, bool can_assign) {
       get_op = OP_GET_GLOBAL;
       set_op = OP_SET_GLOBAL;
     }
+
+    // copy_string returns a garbage-collected string
+    ObjString* key = copy_string(name.start, name.length);
+    Value c;
+    bool found = table_get(&globals, key, &c);
+    if (found && IS_BOOL(c)) {
+      is_const = AS_BOOL(c);
+    }
   }
 
   // if the next token is an equals sign, set the variable instead
   // this makes expresssions like abc.efg(hij).variable = "..."; work
   if (can_assign && match(TOKEN_EQUAL)) {
+    if (is_const) {
+      error_at(&parser.previous, "Cannot change a const value");
+    }
+
     expression();
     emit_op_constant(set_op, set_op, arg);
   } else {
@@ -486,7 +511,7 @@ static void super_(bool canAssign) {
   
   consume(TOKEN_DOT, "Expect '.' after 'super'");
   consume(TOKEN_IDENTIFIER, "Expect superclass method name");
-  // TODO: Fix this
+
   uint32_t name = identifier_constant(&parser.previous);
 
   named_variable(synthetic_token("this"), false);
@@ -501,19 +526,22 @@ static void super_(bool canAssign) {
   }
 }
 
-static void mark_initialized() {
+static void mark_initialized(bool is_const) {
   // for when global main is defined
   if (current->scope_depth == 0) return;
   current->locals[current->local_count - 1].depth = current->scope_depth;
+  current->locals[current->local_count - 1].is_const = is_const;
 }
 
 // "defining" is when a variable becomes available for use
-static void define_variable(uint32_t global) {
+static void define_variable(uint32_t global, bool is_const) {
+  // local
   if (current->scope_depth > 0) {
-    mark_initialized();
+    mark_initialized(is_const);
     return;
   }
 
+  // global
   emit_op_constant(OP_DEFINE_GLOBAL, OP_DEFINE_GLOBAL_LONG, global);
 }
 
@@ -630,7 +658,7 @@ static void function(FunctionType type) {
         error_at_current("Can't have more than 255 parameters (why even would you)");
       }
       uint32_t constant = parse_variable("Expect parameter name");
-      define_variable(constant);
+      define_variable(constant, false);
     } while (match(TOKEN_COMMA));
   }
 
@@ -643,6 +671,7 @@ static void function(FunctionType type) {
   uint32_t constant = make_constant(OBJ_VAL(function));
   emit_op_constant(OP_CLOSURE, OP_CLOSURE_LONG, constant);
 
+  // I don't understand this upvalue tomfoolery particularly well
   for (int i = 0; i < function->upvalue_count; i++) {
     emit_byte(compiler.upvalues[i].is_local ? 1 : 0);
     emit_byte(compiler.upvalues[i].index);
@@ -667,10 +696,10 @@ static void class_declaration() {
   consume(TOKEN_IDENTIFIER, "Expect class name");
   Token class_name = parser.previous;
   uint32_t name_constant = identifier_constant(&parser.previous);
-  declare_variable();
+  declare_variable(false);
 
   emit_op_constant(OP_CLASS, OP_CLASS_LONG, name_constant);
-  define_variable(name_constant);
+  define_variable(name_constant, false);
 
   ClassCompiler class_compiler;
   class_compiler.has_superclass = false;
@@ -686,8 +715,8 @@ static void class_declaration() {
     }
 
     begin_scope();
-    add_local(synthetic_token("super"));
-    define_variable(0);
+    add_local(synthetic_token("super"), true);
+    define_variable(0, false);
 
     named_variable(class_name, false);
     emit_byte(OP_INHERIT);
@@ -714,9 +743,9 @@ static void class_declaration() {
 
 static void fun_declaration() {
   uint32_t global = parse_variable("Expect function name");
-  mark_initialized();
+  mark_initialized(false);
   function(TYPE_FUNCTION);
-  define_variable(global);
+  define_variable(global, false);
 }
 
 static void expression_statement() {
@@ -752,6 +781,7 @@ static void if_statement() {
 }
 
 static void var_declaration() {
+  bool is_const = parser.previous.type == TOKEN_CONST;
   // "var" followed by variable name
   uint32_t global = parse_variable("Expect variable name");
 
@@ -765,7 +795,7 @@ static void var_declaration() {
   consume(TOKEN_SEMICOLON,
           "Expect ';' after variable declaration");
 
-  define_variable(global);
+  define_variable(global, is_const);
 }
 
 static void print_statement() {
@@ -889,7 +919,7 @@ static void declaration() {
     class_declaration();
   } else if (match(TOKEN_FUN)) {
     fun_declaration();
-  } else if (match(TOKEN_VAR)) {
+  } else if (match(TOKEN_VAR) || match(TOKEN_CONST)) {
     var_declaration();
   } else { 
     statement();
@@ -1051,6 +1081,7 @@ ObjFunction* compile(const char *source) {
   init_scanner(source);
   Compiler compiler;
   init_compiler(&compiler, TYPE_SCRIPT);
+  init_table(&globals);
   
   // if the parser has panic mode on, it will not throw any more errors
   parser.had_error = false;

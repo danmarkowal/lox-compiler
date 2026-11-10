@@ -1,0 +1,12 @@
+fun test() {
+  const x = 42;
+  fun inner() {
+    x = 10;
+    return x;
+  }
+
+  return inner;
+}
+
+print test()();
+
